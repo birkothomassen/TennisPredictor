@@ -76,27 +76,12 @@ def _load_simulator() -> MatchSimulator | None:
         return None
     return MatchSimulator(model_path=MODEL_PATH, state_path=STATE_PATH)
 
-@st.cache_data(show_spinner=False)
-def _load_metadata(meta_path: Path) -> dict | None:
-    if not meta_path.exists():
-        return None
-    with open(meta_path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
 # =============== Header ===============
-st.title("Tennis Prediction AI — Matchup- og turnering-simulator")
+st.title("Tennis Prediction")
 
-meta = _load_metadata(META_PATH)
 if not MODEL_PATH.exists() or not STATE_PATH.exists():
     st.error("Modell mangler. Kjør først:\n\n```bash\npython train.py\n```")
     st.stop()
-
-if meta:
-    st.caption(
-        f"Modell: {meta.get('best_model','RandomForest')} • "
-        f"Train-år: {', '.join(map(str, meta.get('train_years', [])))} • "
-        f"Test-år: {meta.get('test_year','?')}"
-    )
 
 st.divider()
 
@@ -107,8 +92,8 @@ stats_lookup = _latest_player_stats(df)
 sim = _load_simulator()
 
 # Tabs
-tab_sim, tab_model, tab_tour = st.tabs(
-    ["Matchup-simulator", "Modell & innsikt", "Turnering-simulator"]
+tab_sim, tab_tour = st.tabs(
+    ["Matchup-simulator", "Turnering-simulator"]
 )
 
 # ====================== SIMULATOR ======================
@@ -155,14 +140,11 @@ with tab_sim:
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
             st.metric(f"Sannsynlighet for {A} å slå {B}", f"{p:.1%}")
-            capA = f"{A} (rank={int(A_s['rank'])}, pts={int(A_s['points'])}" + (f" as of {A_s['points_date']}" if A_s.get("points_date") else "") + ")"
-            capB = f"{B} (rank={int(B_s['rank'])}, pts={int(B_s['points'])}" + (f" as of {B_s['points_date']}" if B_s.get("points_date") else "") + ")"
-            st.caption(f"{capA}  vs  {capB}  [{surface}/{tl}]")
             st.progress(min(max(int(round(p * 100)), 0), 100))
         with c2:
             st.metric("Forventet vinner", A if p >= 0.5 else B)
         with c3:
-            if meta: st.metric("Modell", meta.get("best_model", "RF"))
+            st.metric("Modell", "Aktiv")
 
         st.subheader("Brukte features")
         label_map = {"winner_rank": "A_rank", "loser_rank": "B_rank", "winner_pts": "A_points", "loser_pts": "B_points"}
@@ -171,39 +153,15 @@ with tab_sim:
         feat_df.columns = ["feature", "value"]
         st.dataframe(feat_df, use_container_width=True, hide_index=True)
 
-# ====================== MODELL & INNSIKT ======================
-with tab_model:
-    st.subheader("Modellresultater (fra metadata)")
-    if meta is None:
-        st.info("Ingen metadata funnet.")
-    else:
-        chosen = meta.get("chosen_scores", {})
-        scores = meta.get("scores", {})
-        if chosen:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Accuracy", f"{chosen.get('accuracy', 0):.3f}")
-            c2.metric("Precision", f"{chosen.get('precision', 0):.3f}")
-            c3.metric("LogLoss", f"{chosen.get('logloss', 0):.3f}")
-            c4.metric("Brier", f"{chosen.get('brier', 0):.3f}")
-        if scores:
-            rows = [{"Model": n, "Accuracy": s.get("accuracy"), "Precision": s.get("precision"),
-                     "LogLoss": s.get("logloss"), "Brier": s.get("brier")} for n, s in scores.items()]
-            st.dataframe(pd.DataFrame(rows).sort_values("LogLoss"),
-                         use_container_width=True, hide_index=True)
-    with st.expander("Rå metadata"):
-        st.json(meta or {})
-
 # ====================== TURNERING ======================
 with tab_tour:
     st.subheader("Bygg & kjør turnering")
 
-    # 1) Velg størrelse og bygg tom struktur
     size = st.selectbox("Antall spillere", [4, 8, 16, 32, 64], index=2, key="tour_size")
     labels = round_labels(size)
 
     st.caption("Fyll inn alle deltakerne (én per slot). Du kan auto-fylle med topp N fra datasettet.")
 
-    # Prefill topp N basert på siste points (fallback rank)
     def _top_n_players(n: int) -> List[str]:
         rows = [{"player": name, "points": s.get("points", 0.0), "rank": s.get("rank", 9999)}
                 for name, s in stats_lookup.items()]
@@ -223,7 +181,6 @@ with tab_tour:
             for i in range(size):
                 st.session_state[f"slot_{size}_{i}"] = ""
 
-    # Input-felt i kompakt layout
     st.markdown("### R1 – sett inn spillere")
     cols = st.columns(4 if size >= 16 else 2)
     inputs: List[str] = []
@@ -241,7 +198,6 @@ with tab_tour:
         else:
             st.success("Alt ser bra ut! Du kan simulere under.")
 
-    # 2) Konfig og kjør
     st.markdown("---")
     st.markdown("### Simuler")
     c1, c2, c3, c4 = st.columns(4)
@@ -274,7 +230,6 @@ with tab_tour:
 
         st.success(f"Ferdig! Vinner: {path['champion']}")
 
-        # 3) Visuell progresjon runde for runde
         st.markdown("### Runde for runde")
         round_cols = st.columns(len(path["rounds"]))
         for ci, rnd in enumerate(path["rounds"]):
@@ -286,8 +241,8 @@ with tab_tour:
                     b_line = f"✔️ {B}  (p={1-pA:.2f})" if W == B else f"{B}  (p={1-pA:.2f})"
                     st.markdown(a_line); st.markdown(b_line); st.markdown("—")
 
-        # (Valgfritt) Monte Carlo-sammendrag etterpå
         with st.expander("Monte Carlo-sammendrag (valgfritt)"):
+
             sims = st.slider("Antall simuleringer", 500, 10000, 2000, 500, key="tour_mc_sims")
             if st.button("Kjør MC", key="tour_mc_go"):
                 cfg2 = SimConfig(surface=surface_t, tourney_level=tl_t, n_sims=int(sims), seed=int(seed))
