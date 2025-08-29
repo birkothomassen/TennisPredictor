@@ -1,52 +1,55 @@
 # Tennis Prediction AI
 
-Machine Learning-powered tennis match predictions using advanced algorithms and temporal data analysis
+This is a project where I have built a machine learning system to predict the outcome of tennis matches and tournaments.  
+The app is built with Streamlit and lets you simulate matchups and entire tournaments interactively.
 
 ## Project Overview
 
-This project demonstrates a sophisticated tennis match prediction system that achieves **65.2% accuracy** using ensemble machine learning methods. The system incorporates multiple advanced features including surface-specific Elo ratings, recent form analysis, and temporal data validation.
+The model is trained on ATP match data from 2018–2024 and uses ensemble methods (Random Forest and XGBoost) together with domain-specific features.  
+It reaches an accuracy of about **65.2%**, which is in line with or better than many professional betting models.
 
-## Key Features
+## Features
 
-### Advanced ML Models
-- Random Forest & XGBoost ensemble methods  
-- Temporal validation (train on historical data, test on future)  
-- Feature engineering with domain-specific insights  
-- Hyperparameter optimization for maximum performance  
+- **Matchup simulator**: choose two players, surface and tournament level, and get win probabilities.  
+- **Tournament simulator**: simulate a bracket (up to 8 players), see round-by-round results, or run Monte Carlo simulations to estimate winning chances.  
+- **Feature engineering**: surface-specific Elo ratings, recent form (last 10 matches), head-to-head stats, tournament weighting, age and ranking differences.  
+- **Interactive dashboard**: visual results, feature values used in the predictions, and simple performance metrics.
 
-### Sophisticated Features
-- Surface-specific Elo ratings (Hard, Clay, Grass)  
-- Recent form analysis (last 10 matches)  
-- Head-to-head statistics with temporal awareness  
-- Tournament importance weighting (Grand Slams vs Challengers)  
-- Age and ranking differentials  
+## Performance
 
-### Interactive Dashboard
-- Live match predictions with confidence scores  
-- Model performance analytics with visualizations  
-- Feature importance analysis  
-- Player insights by surface and age groups  
+| Metric              | Value   | Benchmark                                |
+|---------------------|---------|------------------------------------------|
+| Accuracy            | 65.2%   | Professional betting systems: 55–65%     |
+| Precision           | 65.1%   | Industry standard                        |
+| Data Coverage       | 18,877 matches | 2018–2024 ATP Tour              |
+| Temporal Validation | Rolling window | Realistic future prediction setup |
 
-## Performance Results
-
-| Metric | Value | Benchmark |
-|--------|-------|-----------|
-| Accuracy | 65.2% | Professional betting systems: 55-65% |
-| Precision | 65.1% | Industry standard |
-| Data Coverage | 18,877 matches | 2018-2024 ATP Tour |
-| Temporal Validation | Rolling window | Real-world scenario |
-
-## Technical Stack
+## Tech Stack
 
 - Python 3.8+  
-- Machine Learning: Scikit-learn, XGBoost  
-- Data Processing: Pandas, NumPy  
-- Visualization: Plotly, Seaborn, Matplotlib  
-- Web Dashboard: Streamlit  
-- Data: ATP Tour match data (2018-2024)  
+- Scikit-learn, XGBoost  
+- Pandas, NumPy  
+- Plotly, Matplotlib, Seaborn  
+- Streamlit (dashboard)  
 
-## Quick Start
+---
 
-### Installation
-```bash
+## Getting Started
+
+### 1. Clone the repository
+git clone https://github.com/<birkthomassen>/TennisPredictor.git
+cd TennisPredictor
+
+### 2. Install requirements
 pip install -r requirements.txt
+
+### 3. Train the model (must be done before running the app)
+python train.py
+
+### 4. Run the app
+python -m streamlit run app.py 
+
+## Example Screenshots
+![Matchup simulator](docs/screenshots/match.png)
+![Tournament simulator](docs/screenshots/tournament.png)
+
