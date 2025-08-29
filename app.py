@@ -12,16 +12,20 @@ import matplotlib.pyplot as plt
 
 from data import load_matches, list_players
 from predict import MatchSimulator
-
+from tournament_sim import (
+    SimConfig,
+    simulate_tournament,
+    simulate_bracket_path,
+    round_labels,
+)
 
 # =============== Konfig ===============
-st.set_page_config(page_title="Tennis Prediction AI", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis Prediction AI", page_icon=None, layout="wide")
 
 MODELS_DIR = Path("models")
 MODEL_PATH = MODELS_DIR / "best_model.pkl"
 STATE_PATH = MODELS_DIR / "stats_state.pkl"
 META_PATH = MODELS_DIR / "metadata.json"
-
 
 # =============== Cache-funksjoner ===============
 @st.cache_data(show_spinner=False)
@@ -34,58 +38,36 @@ def _player_list(df: pd.DataFrame) -> List[str]:
 
 @st.cache_data(show_spinner=False)
 def _latest_player_stats(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
-    """
-    Siste KJENTE (ikke-NaN) rank / rank_points / age / ht per spiller.
-    Overskriver ikke med manglende verdier, og lagrer datoen poengene er fra.
-    """
+    """Siste KJENTE (ikke-NaN) rank/points/age/ht per spiller + dato for points."""
     stats: Dict[str, Dict[str, float]] = {}
-    df_sorted = df.sort_values("tourney_date")  # eldste -> nyeste
+    df_sorted = df.sort_values("tourney_date")
 
     def _update(p: str, rank, pts, age, ht, date):
         cur = stats.get(p, {})
-        if pd.notna(rank):
-            cur["rank"] = float(rank)
+        if pd.notna(rank): cur["rank"] = float(rank)
         if pd.notna(pts):
             cur["points"] = float(pts)
-            if pd.notna(date):
-                cur["points_date"] = pd.to_datetime(date).date()
-        if pd.notna(age):
-            cur["age"] = float(age)
-        if pd.notna(ht):
-            cur["ht"] = float(ht)
+            if pd.notna(date): cur["points_date"] = pd.to_datetime(date).date()
+        if pd.notna(age): cur["age"] = float(age)
+        if pd.notna(ht): cur["ht"] = float(ht)
         stats[p] = cur
 
     for _, row in df_sorted.iterrows():
         d = row.get("tourney_date")
-        w = row.get("winner_name")
-        l = row.get("loser_name")
+        w, l = row.get("winner_name"), row.get("loser_name")
         if isinstance(w, str):
-            _update(
-                w,
-                row.get("winner_rank"),
-                row.get("winner_rank_points"),
-                row.get("winner_age"),
-                row.get("winner_ht"),
-                d,
-            )
+            _update(w, row.get("winner_rank"), row.get("winner_rank_points"),
+                    row.get("winner_age"), row.get("winner_ht"), d)
         if isinstance(l, str):
-            _update(
-                l,
-                row.get("loser_rank"),
-                row.get("loser_rank_points"),
-                row.get("loser_age"),
-                row.get("loser_ht"),
-                d,
-            )
+            _update(l, row.get("loser_rank"), row.get("loser_rank_points"),
+                    row.get("loser_age"), row.get("loser_ht"), d)
 
-    # Fallbacks
-    for p, v in stats.items():
+    for _, v in stats.items():
         v.setdefault("rank", 100.0)
         v.setdefault("points", 0.0)
         v.setdefault("points_date", None)
         v.setdefault("age", 25.0)
         v.setdefault("ht", 185.0)
-
     return stats
 
 @st.cache_resource(show_spinner=False)
@@ -101,23 +83,8 @@ def _load_metadata(meta_path: Path) -> dict | None:
     with open(meta_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
-def _raw_tree_estimator(model):
-    """
-    Hent underliggende tre-estimator (RandomForest) fra en kalibrert modell.
-    """
-    try:
-        if hasattr(model, "calibrated_classifiers_") and model.calibrated_classifiers_:
-            return model.calibrated_classifiers_[0].base_estimator
-        if hasattr(model, "base_estimator"):
-            return model.base_estimator
-    except Exception:
-        pass
-    return model
-
-
 # =============== Header ===============
-st.title("🎾 Tennis Prediction AI — Matchup-simulator")
+st.title("Tennis Prediction AI — Matchup- og turnering-simulator")
 
 meta = _load_metadata(META_PATH)
 if not MODEL_PATH.exists() or not STATE_PATH.exists():
@@ -126,13 +93,12 @@ if not MODEL_PATH.exists() or not STATE_PATH.exists():
 
 if meta:
     st.caption(
-        f"**Modell:** {meta.get('best_model','RandomForest')} • "
-        f"**Train-år:** {', '.join(map(str, meta.get('train_years', [])))} • "
-        f"**Test-år:** {meta.get('test_year','?')}"
+        f"Modell: {meta.get('best_model','RandomForest')} • "
+        f"Train-år: {', '.join(map(str, meta.get('train_years', [])))} • "
+        f"Test-år: {meta.get('test_year','?')}"
     )
 
 st.divider()
-
 
 # =============== Data & simulator ===============
 df = _load_df()
@@ -141,39 +107,38 @@ stats_lookup = _latest_player_stats(df)
 sim = _load_simulator()
 
 # Tabs
-tab_sim, tab_model = st.tabs(["🆚 Matchup-simulator", "📊 Modell & innsikt"])
-
+tab_sim, tab_model, tab_tour = st.tabs(
+    ["Matchup-simulator", "Modell & innsikt", "Turnering-simulator"]
+)
 
 # ====================== SIMULATOR ======================
 with tab_sim:
-    st.subheader("🆚 Velg spillere og kontekst")
+    st.subheader("Velg spillere og kontekst")
 
     def _safe_index(name: str, default: int = 0) -> int:
-        try:
-            return players.index(name)
-        except Exception:
-            return default
+        try: return players.index(name)
+        except Exception: return default
 
     col_a, col_b = st.columns(2)
     with col_a:
-        A = st.selectbox("Spiller A", options=players, index=_safe_index("Novak Djokovic", 0))
+        A = st.selectbox("Spiller A", players, index=_safe_index("Novak Djokovic", 0), key="sim_player_a")
     with col_b:
-        B = st.selectbox("Spiller B", options=players, index=_safe_index("Carlos Alcaraz", 1))
+        B = st.selectbox("Spiller B", players, index=_safe_index("Carlos Alcaraz", 1), key="sim_player_b")
 
     col_c, col_d = st.columns(2)
     with col_c:
-        surface = st.radio("Underlag", options=["Hard", "Clay", "Grass", "unknown"], index=0, horizontal=True)
+        surface = st.radio("Underlag", ["Hard", "Clay", "Grass", "unknown"],
+                           index=0, horizontal=True, key="sim_surface")
     with col_d:
-        tl = st.selectbox("Turneringsnivå", options=["G", "M", "A", "C", "F"], index=2)
+        tl = st.selectbox("Turneringsnivå", ["G", "M", "A", "C", "F"], index=2, key="sim_tl")
 
-    go = st.button("🔮 Simuler kamp", type="primary")
+    go = st.button("Simuler kamp", type="primary", key="sim_go")
 
     if go and sim:
         if A == B:
             st.warning("Velg to forskjellige spillere.")
             st.stop()
 
-        # Hent auto-verdier
         A_s = stats_lookup.get(A, {"rank": 100.0, "points": 0.0, "age": 25.0, "ht": 185.0, "points_date": None})
         B_s = stats_lookup.get(B, {"rank": 100.0, "points": 0.0, "age": 25.0, "ht": 185.0, "points_date": None})
 
@@ -197,84 +162,18 @@ with tab_sim:
         with c2:
             st.metric("Forventet vinner", A if p >= 0.5 else B)
         with c3:
-            if meta:
-                st.metric("Modell", meta.get("best_model", "RF"))
+            if meta: st.metric("Modell", meta.get("best_model", "RF"))
 
-        # Brukte features (penere labels for A/B)
-        st.subheader("📎 Brukte features")
-        label_map = {
-            "winner_rank": "A_rank",
-            "loser_rank": "B_rank",
-            "winner_pts":  "A_points",
-            "loser_pts":   "B_points",
-        }
+        st.subheader("Brukte features")
+        label_map = {"winner_rank": "A_rank", "loser_rank": "B_rank", "winner_pts": "A_points", "loser_pts": "B_points"}
         pretty_feat = {label_map.get(k, k): v for k, v in feat.items()}
         feat_df = pd.DataFrame([pretty_feat]).T.reset_index()
         feat_df.columns = ["feature", "value"]
         st.dataframe(feat_df, use_container_width=True, hide_index=True)
 
-        # Viktigste parametre (per-prediksjon)
-        st.subheader("🔥 Viktigste parametre (denne prediksjonen)")
-        tree_model = _raw_tree_estimator(sim.model)
-        shown = False
-        try:
-            import shap  # valgfritt
-            explainer = shap.TreeExplainer(tree_model)  # bruk rå RF, ikke kalibrert wrapper
-            X_row, _ = sim._row(
-                A, B,
-                surface=surface, tourney_level=tl,
-                A_rank=A_s["rank"], B_rank=B_s["rank"],
-                A_points=A_s["points"], B_points=B_s["points"],
-                A_age=A_s["age"],  B_age=B_s["age"],
-                A_ht=A_s["ht"],    B_ht=B_s["ht"],
-            )
-            sv = explainer.shap_values(X_row)
-            if isinstance(sv, list):  # RF: liste per klasse; ta klasse 1
-                sv = sv[1]
-            vals = sv[0]
-            order = (np.abs(vals)).argsort()[::-1][:7]
-            names = [sim.feature_order[i] for i in order]
-            contribs = [float(vals[i]) for i in order]
-
-            fig, ax = plt.subplots(figsize=(7, 4))
-            ax.barh(range(len(names))[::-1], contribs[::-1])
-            ax.set_yticks(range(len(names))[::-1])
-            ax.set_yticklabels(names[::-1])
-            ax.set_title("SHAP-bidrag (størst først)")
-            ax.axvline(0, linewidth=1)
-            st.pyplot(fig, use_container_width=True)
-            shown = True
-        except Exception:
-            pass
-
-        if not shown:
-            # Fallback: global importance fra rå RF
-            try:
-                importances = getattr(tree_model, "feature_importances_", None)
-                if importances is not None:
-                    order = np.argsort(importances)[::-1][:7]
-                    names = [sim.feature_order[i] for i in order]
-                    vals = [float(importances[i]) for i in order]
-                    fig, ax = plt.subplots(figsize=(7, 4))
-                    ax.barh(range(len(names))[::-1], vals[::-1])
-                    ax.set_yticks(range(len(names))[::-1])
-                    ax.set_yticklabels(names[::-1])
-                    ax.set_title("Feature importance (RF)")
-                    st.pyplot(fig, use_container_width=True)
-            except Exception:
-                st.caption("Kunne ikke vise viktighetsplot.")
-
-        with st.expander("ℹ️ Datakilde for rank/points"):
-            st.write(
-                "- **rank** hentes fra kolonnene `winner_rank`/`loser_rank` i ATP-CSV.\n"
-                "- **points** hentes fra `winner_rank_points`/`loser_rank_points`.\n"
-                "- Verdiene er **siste kjente** fra datasettet (dato vist over)."
-            )
-
-
 # ====================== MODELL & INNSIKT ======================
 with tab_model:
-    st.subheader("📊 Modellresultater (fra metadata)")
+    st.subheader("Modellresultater (fra metadata)")
     if meta is None:
         st.info("Ingen metadata funnet.")
     else:
@@ -286,49 +185,113 @@ with tab_model:
             c2.metric("Precision", f"{chosen.get('precision', 0):.3f}")
             c3.metric("LogLoss", f"{chosen.get('logloss', 0):.3f}")
             c4.metric("Brier", f"{chosen.get('brier', 0):.3f}")
-
         if scores:
-            rows = []
-            for name, sc in scores.items():
-                rows.append({
-                    "Model": name,
-                    "Accuracy": sc.get("accuracy"),
-                    "Precision": sc.get("precision"),
-                    "LogLoss": sc.get("logloss"),
-                    "Brier": sc.get("brier"),
-                })
-            score_df = pd.DataFrame(rows).sort_values("LogLoss")
-            st.dataframe(score_df, use_container_width=True, hide_index=True)
-
-    st.subheader("🌍 Viktigste features (globalt)")
-    if sim is None:
-        st.info("Modell ikke lastet.")
-    else:
-        try:
-            tree_model = _raw_tree_estimator(sim.model)
-            importances = getattr(tree_model, "feature_importances_", None)
-            if importances is not None:
-                feat_imp = pd.DataFrame({
-                    "feature": sim.feature_order,
-                    "importance": importances
-                }).sort_values("importance", ascending=True)
-
-                # Kul, ren barplot (matplotlib)
-                fig, ax = plt.subplots(figsize=(8, 5))
-                ax.barh(feat_imp["feature"], feat_imp["importance"])
-                ax.set_title("Feature Importance — Random Forest", fontweight="bold")
-                ax.set_xlabel("Viktighet")
-                ax.set_ylabel("Feature")
-                st.pyplot(fig, use_container_width=True)
-
-                # Topp 3 som metrics
-                top3 = feat_imp.sort_values("importance", ascending=False).head(3)
-                c1, c2, c3 = st.columns(3)
-                cols = [c1, c2, c3]
-                for i, row in enumerate(top3.itertuples(index=False), start=0):
-                    cols[i].metric(f"#{i+1} {row.feature}", f"{row.importance:.3f}")
-        except Exception:
-            st.caption("Kunne ikke beregne global feature importance.")
-
+            rows = [{"Model": n, "Accuracy": s.get("accuracy"), "Precision": s.get("precision"),
+                     "LogLoss": s.get("logloss"), "Brier": s.get("brier")} for n, s in scores.items()]
+            st.dataframe(pd.DataFrame(rows).sort_values("LogLoss"),
+                         use_container_width=True, hide_index=True)
     with st.expander("Rå metadata"):
         st.json(meta or {})
+
+# ====================== TURNERING ======================
+with tab_tour:
+    st.subheader("Bygg & kjør turnering")
+
+    # 1) Velg størrelse og bygg tom struktur
+    size = st.selectbox("Antall spillere", [4, 8, 16, 32, 64], index=2, key="tour_size")
+    labels = round_labels(size)
+
+    st.caption("Fyll inn alle deltakerne (én per slot). Du kan auto-fylle med topp N fra datasettet.")
+
+    # Prefill topp N basert på siste points (fallback rank)
+    def _top_n_players(n: int) -> List[str]:
+        rows = [{"player": name, "points": s.get("points", 0.0), "rank": s.get("rank", 9999)}
+                for name, s in stats_lookup.items()]
+        sdf = pd.DataFrame(rows)
+        if len(sdf) == 0: return []
+        sdf = sdf.sort_values(["points", "rank"], ascending=[False, True])
+        return sdf.head(n)["player"].tolist()
+
+    cb1, cb2 = st.columns([1, 1])
+    with cb1:
+        if st.button(f"Fyll med topp {size}", key="btn_prefill"):
+            top = _top_n_players(size)
+            for i in range(size):
+                st.session_state[f"slot_{size}_{i}"] = top[i] if i < len(top) else ""
+    with cb2:
+        if st.button("Tøm alle", key="btn_clear"):
+            for i in range(size):
+                st.session_state[f"slot_{size}_{i}"] = ""
+
+    # Input-felt i kompakt layout
+    st.markdown("### R1 – sett inn spillere")
+    cols = st.columns(4 if size >= 16 else 2)
+    inputs: List[str] = []
+    for i in range(size):
+        col = cols[(i // 2) % len(cols)]
+        with col:
+            txt = st.text_input(f"Slot {i+1}", key=f"slot_{size}_{i}", placeholder="Spillernavn")
+            inputs.append(txt.strip())
+
+    if st.button("Valider deltakere", key="btn_validate"):
+        if any(not x for x in inputs):
+            st.error("Alle slots må fylles ut.")
+        elif len(set(inputs)) != len(inputs):
+            st.error("Dupliserte navn funnet. Hver spiller må være unik.")
+        else:
+            st.success("Alt ser bra ut! Du kan simulere under.")
+
+    # 2) Konfig og kjør
+    st.markdown("---")
+    st.markdown("### Simuler")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        surface_t = st.selectbox("Underlag", ["Hard", "Clay", "Grass", "unknown"], index=0, key="tour_surface")
+    with c2:
+        tl_t = st.selectbox("Turneringsnivå", ["G", "M", "A", "C", "F"], index=2, key="tour_tl")
+    with c3:
+        mode = st.radio("Metode", ["Mest sannsynlig", "Én tilfeldig simulering"], index=0, key="tour_mode")
+    with c4:
+        seed = st.number_input("Seed", min_value=0, max_value=10**9, value=42, step=1, key="tour_seed")
+
+    run = st.button("Kjør turnering", key="tour_run")
+
+    if run:
+        entrants = inputs
+        if any(not x for x in entrants):
+            st.error("Alle slots må fylles ut."); st.stop()
+        if (len(entrants) & (len(entrants) - 1)) != 0 or len(entrants) != size:
+            st.error(f"Antall spillere må være {size} (2^k)."); st.stop()
+        if sim is None:
+            st.error("Modell mangler – tren først (`python train.py`)."); st.stop()
+
+        cfg = SimConfig(surface=surface_t, tourney_level=tl_t, seed=int(seed))
+
+        path = simulate_bracket_path(
+            sim, entrants, stats_lookup, cfg,
+            mode="sample" if mode.startswith("Én") else "most_likely",
+        )
+
+        st.success(f"Ferdig! Vinner: {path['champion']}")
+
+        # 3) Visuell progresjon runde for runde
+        st.markdown("### Runde for runde")
+        round_cols = st.columns(len(path["rounds"]))
+        for ci, rnd in enumerate(path["rounds"]):
+            with round_cols[ci]:
+                st.markdown(f"**{rnd['label']}**")
+                for m in rnd["matches"]:
+                    A, B, pA, W = m["A"], m["B"], m["pA"], m["winner"]
+                    a_line = f"✔️ {A}  (p={pA:.2f})" if W == A else f"{A}  (p={pA:.2f})"
+                    b_line = f"✔️ {B}  (p={1-pA:.2f})" if W == B else f"{B}  (p={1-pA:.2f})"
+                    st.markdown(a_line); st.markdown(b_line); st.markdown("—")
+
+        # (Valgfritt) Monte Carlo-sammendrag etterpå
+        with st.expander("Monte Carlo-sammendrag (valgfritt)"):
+            sims = st.slider("Antall simuleringer", 500, 10000, 2000, 500, key="tour_mc_sims")
+            if st.button("Kjør MC", key="tour_mc_go"):
+                cfg2 = SimConfig(surface=surface_t, tourney_level=tl_t, n_sims=int(sims), seed=int(seed))
+                summary_df, _ = simulate_tournament(sim, entrants, stats_lookup, cfg2)
+                show = summary_df.copy()
+                show["Champion"] = (show["Champion"] * 100).round(1)
+                st.dataframe(show, use_container_width=True, hide_index=True)
